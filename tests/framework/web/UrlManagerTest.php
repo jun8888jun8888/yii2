@@ -3,6 +3,7 @@ namespace yiiunit\framework\web;
 
 use yii\web\Request;
 use yii\web\UrlManager;
+use yii\web\UrlNormalizer;
 use yiiunit\TestCase;
 
 /**
@@ -246,9 +247,15 @@ class UrlManagerTest extends TestCase
         $url = $manager->createAbsoluteUrl(['post/view', 'id' => 1, 'title' => 'sample post'], 'https');
         $this->assertEquals('https://www.example.com?r=post%2Fview&id=1&title=sample+post', $url);
 
+        $url = $manager->createAbsoluteUrl(['post/view', 'id' => 1, 'title' => 'sample post'], '');
+        $this->assertEquals('//www.example.com?r=post%2Fview&id=1&title=sample+post', $url);
+
         $manager->hostInfo = 'https://www.example.com';
         $url = $manager->createAbsoluteUrl(['post/view', 'id' => 1, 'title' => 'sample post'], 'http');
         $this->assertEquals('http://www.example.com?r=post%2Fview&id=1&title=sample+post', $url);
+
+        $url = $manager->createAbsoluteUrl(['post/view', 'id' => 1, 'title' => 'sample post'], '');
+        $this->assertEquals('//www.example.com?r=post%2Fview&id=1&title=sample+post', $url);
     }
 
     public function testCreateAbsoluteUrlWithSuffix()
@@ -296,6 +303,7 @@ class UrlManagerTest extends TestCase
         $manager = new UrlManager([
             'enablePrettyUrl' => true,
             'cache' => null,
+            'normalizer' => false,
         ]);
         // empty pathinfo
         $request->pathInfo = '';
@@ -314,10 +322,19 @@ class UrlManagerTest extends TestCase
         $result = $manager->parseRequest($request);
         $this->assertEquals(['module/site/index/', []], $result);
 
+        // trailing slash is insignificant if normalizer is enabled
+        $manager->normalizer = new UrlNormalizer([
+            'action' => null,
+        ]);
+        $request->pathInfo = '/module/site/index/';
+        $result = $manager->parseRequest($request);
+        $this->assertEquals(['module/site/index', []], $result);
+
         // pretty URL rules
         $manager = new UrlManager([
             'enablePrettyUrl' => true,
             'cache' => null,
+            'normalizer' => false,
             'rules' => [
                 [
                     'pattern' => 'post/<id>/<title>',
@@ -345,6 +362,14 @@ class UrlManagerTest extends TestCase
         $request->pathInfo = 'module/site/index';
         $result = $manager->parseRequest($request);
         $this->assertEquals(['module/site/index', []], $result);
+
+        // trailing slash is insignificant if normalizer is enabled
+        $manager->normalizer = new UrlNormalizer([
+            'action' => null,
+        ]);
+        $request->pathInfo = 'post/123/this+is+sample/';
+        $result = $manager->parseRequest($request);
+        $this->assertEquals(['post/view', ['id' => '123', 'title' => 'this+is+sample']], $result);
 
         // pretty URL rules
         $manager = new UrlManager([
@@ -475,45 +500,48 @@ class UrlManagerTest extends TestCase
     }
 
     /**
-     * Tests if multislashes not accepted at the end of URL if PrettyUrl is enabled
+     * @dataProvider multipleHostsRulesDataProvider
      *
-     * @see https://github.com/yiisoft/yii2/issues/10739
+     * @see https://github.com/yiisoft/yii2/issues/7948
+     *
+     * @param string $host
      */
-    public function testMultiSlashesAtTheEnd()
+    public function testMultipleHostsRules($host)
     {
         $manager = new UrlManager([
             'enablePrettyUrl' => true,
+            'cache' => null,
+            'rules' => [
+                ['host' => 'http://example.com', 'pattern' => '<slug:(search)>', 'route' => 'products/search', 'defaults' => ['lang' => 'en']],
+                ['host' => 'http://example.fr', 'pattern' => '<slug:(search)>', 'route' => 'products/search', 'defaults' => ['lang' => 'fr']],
+            ],
+            'hostInfo' => $host,
+            'baseUrl' => '/',
+            'scriptUrl' => '',
         ]);
 
-        $request = new Request;
+        $url = $manager->createAbsoluteUrl(['products/search', 'lang' => 'en', 'slug' => 'search'], 'https');
+        $this->assertEquals('https://example.com/search', $url);
+        $url = $manager->createUrl(['products/search', 'lang' => 'en', 'slug' => 'search']);
+        $this->assertEquals('http://example.com/search', $url);
+        $url = $manager->createUrl(['products/search', 'lang' => 'en', 'slug' => 'search', 'param1' => 'value1']);
+        $this->assertEquals('http://example.com/search?param1=value1', $url);
 
-        $request->pathInfo = 'post/multi/slash/';
-        $result = $manager->parseRequest($request);
-        $this->assertEquals(['post/multi/slash/', []], $result);
+        $url = $manager->createAbsoluteUrl(['products/search', 'lang' => 'fr', 'slug' => 'search'], 'https');
+        $this->assertEquals('https://example.fr/search', $url);
+        $url = $manager->createUrl(['products/search', 'lang' => 'fr', 'slug' => 'search']);
+        $this->assertEquals('http://example.fr/search', $url);
+        $url = $manager->createUrl(['products/search', 'lang' => 'fr', 'slug' => 'search', 'param1' => 'value1']);
+        $this->assertEquals('http://example.fr/search?param1=value1', $url);
+    }
 
-        $request->pathInfo = 'post/multi/slash//';
-        $result = $manager->parseRequest($request);
-        $this->assertEquals(false, $result);
-
-        $request->pathInfo = 'post/multi/slash////';
-        $result = $manager->parseRequest($request);
-        $this->assertEquals(false, $result);
-
-        $manager = new UrlManager([
-            'enablePrettyUrl' => true,
-            'suffix' => '/'
-        ]);
-
-        $request->pathInfo = 'post/multi/slash/';
-        $result = $manager->parseRequest($request);
-        $this->assertEquals(['post/multi/slash', []], $result);
-
-        $request->pathInfo = 'post/multi/slash//';
-        $result = $manager->parseRequest($request);
-        $this->assertEquals(false, $result);
-
-        $request->pathInfo = 'post/multi/slash///////';
-        $result = $manager->parseRequest($request);
-        $this->assertEquals(false, $result);
+    public function multipleHostsRulesDataProvider()
+    {
+        return [
+            ['http://example.com'],
+            ['https://example.com'],
+            ['http://example.fr'],
+            ['https://example.fr'],
+        ];
     }
 }
